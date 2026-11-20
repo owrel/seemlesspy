@@ -1,7 +1,7 @@
 import json
 from collections.abc import Sequence
 
-from .descriptor import AcceptedType, Class
+from .descriptor import AcceptedType, Class, split_type
 
 _TS_TYPES = {
     "str": "string",
@@ -9,6 +9,9 @@ _TS_TYPES = {
     "float": "number",
     "bool": "boolean",
     "None": "null",
+    "any": "any",
+    "list": "unknown[]",
+    "dict": "Record<string, unknown>",
 }
 
 _TS_IMPORT = 'import { connector } from "seemlessts";'
@@ -262,7 +265,29 @@ def _ts_type(type_name: AcceptedType) -> str:
         return "null"
     if not isinstance(type_name, str):
         raise NotImplementedError(f"TODO: TS type for {type_name!r}")
-    return _TS_TYPES.get(type_name, type_name)
+    return _ts_descriptor(type_name)
+
+
+def _ts_descriptor(descriptor: str) -> str:
+    parts = split_type(descriptor, "|")
+
+    if len(parts) > 1:
+        return " | ".join([_ts_descriptor(part) for part in parts])
+
+    if descriptor.startswith("list[") and descriptor.endswith("]"):
+        inner = descriptor[len("list[") : -1]
+        return f"{_ts_descriptor(inner)}[]"
+
+    if descriptor.startswith("dict[") and descriptor.endswith("]"):
+        inner = descriptor[len("dict[") : -1]
+        pair = split_type(inner, ",")
+
+        if len(pair) == 2:
+            key = _ts_descriptor(pair[0])
+            value = _ts_descriptor(pair[1])
+            return f"Record<{key}, {value}>"
+
+    return _TS_TYPES.get(descriptor, descriptor)
 
 
 def _ts_return_type(type_name: AcceptedType) -> str:

@@ -1,4 +1,6 @@
 import inspect
+import types
+import typing
 from collections.abc import Callable, Sequence
 from functools import wraps
 from types import FunctionType
@@ -128,11 +130,50 @@ def _annotation_to_type(
         raise MissingAnnotationError(cls, func, label)
     if annotation is None or annotation is type(None):
         return None
+    return _describe_annotation(annotation, label, cls, func)
+
+
+def _describe_annotation(
+    annotation: object, label: str, cls: type, func: FunctionType
+) -> str:
+    if annotation is None or annotation is type(None):
+        return "None"
+
+    if annotation is typing.Any:
+        return "any"
+
+    origin = typing.get_origin(annotation)
+
+    if origin is types.UnionType or origin is typing.Union:
+        arguments = typing.get_args(annotation)
+        parts = [
+            _describe_annotation(argument, label, cls, func)
+            for argument in arguments
+        ]
+        return " | ".join(parts)
+
+    if origin is list:
+        arguments = typing.get_args(annotation)
+        if arguments:
+            inner = _describe_annotation(arguments[0], label, cls, func)
+            return f"list[{inner}]"
+        return "list"
+
+    if origin is dict:
+        arguments = typing.get_args(annotation)
+        if len(arguments) == 2:
+            key = _describe_annotation(arguments[0], label, cls, func)
+            value = _describe_annotation(arguments[1], label, cls, func)
+            return f"dict[{key}, {value}]"
+        return "dict"
+
     for simple in _SIMPLE_TYPES:
         if annotation is simple:
             return simple.__name__
+
     if isinstance(annotation, type):
         return annotation.__name__
+
     raise NotImplementedError(
         f"TODO: descriptor shape for annotation {annotation!r} of {label!r}"
     )

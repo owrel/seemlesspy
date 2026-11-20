@@ -1,16 +1,62 @@
 import secrets
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from .contract import Contract
-from .descriptor import AcceptedType, Descriptor
+from .descriptor import AcceptedType, Descriptor, split_type
 
 if TYPE_CHECKING:
     from .base import SeemlessPy
 
 
 _descriptor = Descriptor(version="0.1", classes={})
+
+_Transform = Callable[[Any], Any]
+
+_transformers: dict[type, _Transform | None] = {}
+
+
+def register_transformer(
+    cls: type, transformer: _Transform | None = None
+) -> None:
+    _transformers[cls] = transformer
+
+
+def to_jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    if isinstance(value, (list, tuple)):
+        return [to_jsonable(item) for item in value]
+
+    if isinstance(value, dict):
+        result: dict[Any, Any] = {}
+
+        for key, item in value.items():
+            result[key] = to_jsonable(item)
+
+        return result
+
+    transformer = _transformer_for(type(value))
+
+    if transformer is not None:
+        return transformer(value)
+
+    method = getattr(value, "to_json", None)
+
+    if callable(method):
+        return method()
+
+    return value
+
+
+def _transformer_for(cls: type) -> _Transform | None:
+    for base in cls.__mro__:
+        if base in _transformers:
+            return _transformers[base]
+
+    return None
 
 
 @dataclass
@@ -201,6 +247,45 @@ def _check_params(
 def _matches_type(type_name: AcceptedType, value: object) -> bool:
     if not isinstance(type_name, str):
         return True
+
+    if type_name == "any":
+        return True
+
+    parts = split_type(type_name, "|")
+
+    if len(parts) > 1:
+        return any(_matches_type(part, value) for part in parts)
+
+    if type_name == "list":
+        return isinstance(value, list)
+
+    if type_name.startswith("list[") and type_name.endswith("]"):
+        if not isinstance(value, list):
+            return False
+
+        inner = type_name[len("list[") : -1]
+        return all(_matches_type(inner, item) for item in value)
+
+    if type_name == "dict":
+        return isinstance(value, dict)
+
+    if type_name.startswith("dict[") and type_name.endswith("]"):
+        if not isinstance(value, dict):
+            return False
+
+        pair = split_type(type_name[len("dict[") : -1], ",")
+
+        if len(pair) != 2:
+            return True
+
+        for key, item in value.items():
+            if not _matches_type(pair[0], key):
+                return False
+            if not _matches_type(pair[1], item):
+                return False
+
+        return True
+
     if type_name == "str":
         return isinstance(value, str)
     if type_name == "int":

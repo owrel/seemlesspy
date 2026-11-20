@@ -6,7 +6,12 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from .contract import Contract, ContractResolution
-from .holder import Session, _descriptor, resolve_contract
+from .holder import (
+    Session,
+    _descriptor,
+    resolve_contract,
+    to_jsonable,
+)
 
 if TYPE_CHECKING:
     from .base import SeemlessPy
@@ -129,7 +134,7 @@ def _update_message(
         "event": "update",
         "instance_id": instance_id,
         "member": member,
-        "value": value,
+        "value": to_jsonable(value),
     }
 
 
@@ -140,7 +145,7 @@ async def _resolve(
     try:
         contract = _parse_contract(data)
         call = _describe_call(contract)
-        result = resolve_contract(contract, session)
+        result = to_jsonable(resolve_contract(contract, session))
     except Exception as error:
         await ws.send_json(
             asdict(ContractResolution(call=call, error=str(error)))

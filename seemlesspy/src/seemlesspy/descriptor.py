@@ -5,9 +5,30 @@ from typing import TYPE_CHECKING, Literal, TypeAlias
 if TYPE_CHECKING:
     from .base import SeemlessPy
 
-AcceptedType: TypeAlias = str | int | dict | list | bool | None
+AcceptedType: TypeAlias = str | int | float | dict | list | bool | None
 
 AcceptedKind: TypeAlias = Literal["property", "method"]
+
+
+def split_type(descriptor: str, separator: str) -> list[str]:
+    parts: list[str] = []
+    current = ""
+    depth = 0
+
+    for char in descriptor:
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+
+        if char == separator and depth == 0:
+            parts.append(current.strip())
+            current = ""
+        else:
+            current += char
+
+    parts.append(current.strip())
+    return parts
 
 
 @dataclass
