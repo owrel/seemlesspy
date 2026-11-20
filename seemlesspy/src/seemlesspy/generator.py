@@ -1,0 +1,271 @@
+import json
+from collections.abc import Sequence
+
+from .descriptor import AcceptedType, Class
+
+_TS_TYPES = {
+    "str": "string",
+    "int": "number",
+    "float": "number",
+    "bool": "boolean",
+    "None": "null",
+}
+
+_TS_IMPORT = 'import { connector } from "seemlessts";'
+
+
+def generate_ts(cls: Class) -> str:
+    return f"{_TS_IMPORT}\n\n{generate_class(cls)}"
+
+
+def generate_module(classes: Sequence[Class]) -> str:
+    bodies = [generate_class(cls) for cls in classes]
+
+    if not bodies:
+        return f"{_TS_IMPORT}\n"
+
+    body = "\n\n".join(bodies)
+    return f"{_TS_IMPORT}\n\n{body}\n"
+
+
+def generate_class(cls: Class) -> str:
+    class_name = cls.cls.__qualname__
+    lines: list[str] = [
+        f"export class {cls.name} {{",
+        f"  private cls_name: string = {json.dumps(class_name)};",
+        "  private instance_id: string | null = null;",
+        "  private ready: Promise<void>;",
+        "  private watchers = new Map<string, Set<(value: unknown) => void>>();",
+        "  private stopWatchers: (() => void) | null = null;",
+        "",
+    ]
+
+    constructor_params: list[str] = []
+    constructor_args: list[str] = []
+    for name, param_type in cls.constructor.params:
+        constructor_params.append(f"{name}: {_ts_type(param_type)}")
+        constructor_args.append(f"[{json.dumps(name)}, {name}]")
+    lines.extend(
+        (
+            f"  constructor({', '.join(constructor_params)}) {{",
+            "    this.ready = connector",
+            "      .send({",
+        )
+    )
+    lines.extend(
+        _contract_lines(
+            "constructor", "__init__", constructor_args, "        ", "null"
+        )
+    )
+    lines.extend(
+        (
+            "      })",
+            "      .then((result) => {",
+            "        this.instance_id = result as string;",
+            "      });",
+            "  }",
+            "",
+        )
+    )
+
+    properties: list[tuple[str, str]] = []
+
+    for name, member in cls.members.items():
+        if member.kind == "property":
+            ret = _ts_type(member.ret)
+            properties.append((name, ret))
+            lines.extend(
+                (
+                    f"  get {name}(): Promise<{ret}> {{",
+                    "    return this.ready.then(async () => {",
+                    "      const result = await connector.send({",
+                )
+            )
+            lines.extend(
+                _contract_lines(
+                    "property", name, [], "        ", "this.instance_id"
+                )
+            )
+            lines.extend(
+                (
+                    "      });",
+                    f"      return result as {ret};",
+                    "    });",
+                    "  }",
+                    "",
+                )
+            )
+            continue
+
+        method_params: list[str] = []
+        method_args: list[str] = []
+        for param_name, param_type in member.params:
+            method_params.append(f"{param_name}: {_ts_type(param_type)}")
+            method_args.append(f"[{json.dumps(param_name)}, {param_name}]")
+        ret = _ts_return_type(member.ret)
+        signature = (
+            f"  async {name}({', '.join(method_params)}): Promise<{ret}> {{"
+        )
+        lines.extend((signature, "    await this.ready;"))
+        if member.ret is None:
+            lines.append("    await connector.send({")
+            lines.extend(
+                _contract_lines(
+                    "method", name, method_args, "      ", "this.instance_id"
+                )
+            )
+            lines.append("    });")
+        else:
+            lines.append("    const result = await connector.send({")
+            lines.extend(
+                _contract_lines(
+                    "method", name, method_args, "      ", "this.instance_id"
+                )
+            )
+            lines.extend(("    });", f"    return result as {ret};"))
+        lines.extend(("  }", ""))
+
+    lines.extend(
+        (
+            "  private async watch(",
+            "    member: string,",
+            "    callback: (value: unknown) => void,",
+            "  ): Promise<() => void> {",
+            "    await this.ready;",
+            "",
+            "    if (this.stopWatchers === null) {",
+            "      this.stopWatchers = connector.onUpdate((update) => {",
+            "        if (update.instance_id !== this.instance_id) {",
+            "          return;",
+            "        }",
+            "",
+            "        const listeners = this.watchers.get(update.member);",
+            "",
+            "        if (listeners === undefined) {",
+            "          return;",
+            "        }",
+            "",
+            "        for (const listener of listeners) {",
+            "          listener(update.value);",
+            "        }",
+            "      });",
+            "    }",
+            "",
+            "    let listeners = this.watchers.get(member);",
+            "",
+            "    if (listeners === undefined) {",
+            "      listeners = new Set();",
+            "      this.watchers.set(member, listeners);",
+            "    }",
+            "",
+            "    listeners.add(callback);",
+            "",
+            "    const value = await connector.send({",
+            '      kind: "subscribe",',
+            "      cls_name: this.cls_name,",
+            "      instance_id: this.instance_id,",
+            "      member,",
+            "      params: [],",
+            "    });",
+            "",
+            "    callback(value);",
+            "",
+            "    return () => {",
+            "      listeners.delete(callback);",
+            "      void connector.send({",
+            '        kind: "unsubscribe",',
+            "        cls_name: this.cls_name,",
+            "        instance_id: this.instance_id,",
+            "        member,",
+            "        params: [],",
+            "      });",
+            "    };",
+            "  }",
+            "",
+        )
+    )
+
+    for name, ret in properties:
+        method_name = f"watch{_pascal_case(name)}"
+        signature = (
+            f"    return this.watch({json.dumps(name)}, (value) => "
+            f"callback(value as {ret}));"
+        )
+        lines.extend(
+            (
+                f"  async {method_name}(",
+                f"    callback: (value: {ret}) => void,",
+                "  ): Promise<() => void> {",
+                signature,
+                "  }",
+                "",
+            )
+        )
+
+    lines.extend(
+        (
+            "  async release(): Promise<void> {",
+            "    await this.ready;",
+            "",
+            "    if (this.stopWatchers !== null) {",
+            "      this.stopWatchers();",
+            "      this.stopWatchers = null;",
+            "    }",
+            "",
+            "    await connector.send({",
+            '      kind: "release",',
+            "      cls_name: this.cls_name,",
+            "      instance_id: this.instance_id,",
+            '      member: "",',
+            "      params: [],",
+            "    });",
+            "    this.instance_id = null;",
+            "  }",
+            "",
+        )
+    )
+
+    while not lines[-1]:
+        lines.pop()
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _pascal_case(name: str) -> str:
+    parts = name.split("_")
+    result = ""
+
+    for part in parts:
+        result += part[:1].upper() + part[1:]
+
+    return result
+
+
+def _contract_lines(
+    kind: str,
+    member: str,
+    args: list[str],
+    indent: str,
+    instance_id: str,
+) -> list[str]:
+    return [
+        f"{indent}kind: {json.dumps(kind)},",
+        f"{indent}cls_name: this.cls_name,",
+        f"{indent}instance_id: {instance_id},",
+        f"{indent}member: {json.dumps(member)},",
+        f"{indent}params: [{', '.join(args)}],",
+    ]
+
+
+def _ts_type(type_name: AcceptedType) -> str:
+    if type_name is None:
+        return "null"
+    if not isinstance(type_name, str):
+        raise NotImplementedError(f"TODO: TS type for {type_name!r}")
+    return _TS_TYPES.get(type_name, type_name)
+
+
+def _ts_return_type(type_name: AcceptedType) -> str:
+    if type_name is None:
+        return "void"
+    return _ts_type(type_name)
