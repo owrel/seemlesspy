@@ -1,6 +1,4 @@
 import inspect
-import types
-import typing
 from collections.abc import Callable, Sequence
 from functools import wraps
 from types import FunctionType
@@ -13,11 +11,10 @@ from .decorators import (
     seemlessmethod,
     seemlessproperty,
 )
-from .descriptor import AcceptedType, Class, Constructor, Member
+from .descriptor import Class, Constructor, Member
 from .errors import MissingAnnotationError
 from .holder import add_class
-
-_SIMPLE_TYPES = (bool, int, float, str, type(None))
+from .rpc_types import resolve_self
 
 
 class SeemlessPy:
@@ -28,18 +25,21 @@ class SeemlessPy:
             if getattr(func, SEAMLESS_ATTR, None) != "method":
                 continue
             signature = inspect.signature(func, eval_str=True)
-            params: Sequence[tuple[str, AcceptedType]] = []
+            params: list[tuple[str, object]] = []
             for index, param in enumerate(signature.parameters.values()):
                 if index == 0:
                     continue
-                type_name = _annotation_to_type(
-                    param.annotation, f"parameter {param.name!r}", cls, func
+                annotation = _annotation_param(
+                    param.annotation,
+                    f"parameter {param.name!r}",
+                    cls,
+                    func,
                 )
-                params.append((param.name, type_name))
+                params.append((param.name, annotation))
             members[name] = Member(
                 kind="method",
                 params=params,
-                ret=_annotation_to_type(
+                ret=_annotation_param(
                     signature.return_annotation,
                     f"return value of {name!r}",
                     cls,
@@ -69,7 +69,7 @@ class SeemlessPy:
             properties[name] = Member(
                 kind="property",
                 params=[],
-                ret=_annotation_to_type(
+                ret=_annotation_param(
                     signature.return_annotation,
                     f"return value of {name!r}",
                     cls,
@@ -107,76 +107,30 @@ def _is_seemless_property(obj: object) -> bool:
 
 def _describe_constructor(
     cls: type,
-) -> Sequence[tuple[str, AcceptedType]]:
+) -> Sequence[tuple[str, object]]:
     init = cls.__init__
     if not isinstance(init, FunctionType):
         return []
     signature = inspect.signature(init, eval_str=True)
-    constructor: list[tuple[str, AcceptedType]] = []
+    constructor: list[tuple[str, object]] = []
     for index, param in enumerate(signature.parameters.values()):
         if index == 0:
             continue
-        type_name = _annotation_to_type(
+        annotation = _annotation_param(
             param.annotation, f"parameter {param.name!r}", cls, init
         )
-        constructor.append((param.name, type_name))
+        constructor.append((param.name, annotation))
     return constructor
 
 
-def _annotation_to_type(
+def _annotation_param(
     annotation: object, label: str, cls: type, func: FunctionType
-) -> AcceptedType:
+) -> object:
     if annotation is inspect.Parameter.empty:
         raise MissingAnnotationError(cls, func, label)
     if annotation is None or annotation is type(None):
         return None
-    return _describe_annotation(annotation, label, cls, func)
-
-
-def _describe_annotation(
-    annotation: object, label: str, cls: type, func: FunctionType
-) -> str:
-    if annotation is None or annotation is type(None):
-        return "None"
-
-    if annotation is typing.Any:
-        return "any"
-
-    origin = typing.get_origin(annotation)
-
-    if origin is types.UnionType or origin is typing.Union:
-        arguments = typing.get_args(annotation)
-        parts = [
-            _describe_annotation(argument, label, cls, func)
-            for argument in arguments
-        ]
-        return " | ".join(parts)
-
-    if origin is list:
-        arguments = typing.get_args(annotation)
-        if arguments:
-            inner = _describe_annotation(arguments[0], label, cls, func)
-            return f"list[{inner}]"
-        return "list"
-
-    if origin is dict:
-        arguments = typing.get_args(annotation)
-        if len(arguments) == 2:
-            key = _describe_annotation(arguments[0], label, cls, func)
-            value = _describe_annotation(arguments[1], label, cls, func)
-            return f"dict[{key}, {value}]"
-        return "dict"
-
-    for simple in _SIMPLE_TYPES:
-        if annotation is simple:
-            return simple.__name__
-
-    if isinstance(annotation, type):
-        return annotation.__name__
-
-    raise NotImplementedError(
-        f"TODO: descriptor shape for annotation {annotation!r} of {label!r}"
-    )
+    return resolve_self(annotation, cls)
 
 
 def seemlessify(

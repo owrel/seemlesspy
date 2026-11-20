@@ -6,12 +6,8 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from .contract import Contract, ContractResolution
-from .holder import (
-    Session,
-    _descriptor,
-    resolve_contract,
-    to_jsonable,
-)
+from .holder import Session, _descriptor, resolve_contract
+from .rpc_types import to_json
 
 if TYPE_CHECKING:
     from .base import SeemlessPy
@@ -59,9 +55,14 @@ class ConnectionManager:
         instance: "SeemlessPy",
         members: Sequence[str] | None = None,
     ) -> None:
+        cls = _descriptor.classes.get(type(instance).__qualname__)
+
         for ws, session in self.sessions.items():
-            for update in session.take_updates(instance, members):
-                await ws.send_json(_update_message(*update))
+            for instance_id, member, raw in session.take_updates(
+                instance, members
+            ):
+                value = _encode(cls, member, raw)
+                await ws.send_json(_update_message(instance_id, member, value))
 
     def notify_nowait(
         self,
@@ -127,6 +128,18 @@ def _describe_call(contract: Contract) -> str:
     return f"{call}({args})"
 
 
+def _encode(cls: Any, member: str, value: Any) -> Any:
+    if cls is None:
+        return value
+
+    found = cls.members.get(member)
+
+    if found is None:
+        return value
+
+    return to_json(found.ret, cls.cls, value)
+
+
 def _update_message(
     instance_id: str, member: str, value: object
 ) -> dict[str, Any]:
@@ -134,7 +147,7 @@ def _update_message(
         "event": "update",
         "instance_id": instance_id,
         "member": member,
-        "value": to_jsonable(value),
+        "value": value,
     }
 
 
@@ -142,10 +155,25 @@ async def _resolve(
     data: dict[str, Any], session: Session, ws: WebSocket
 ) -> None:
     call = ""
+    cls = None
+    member = None
+
     try:
         contract = _parse_contract(data)
         call = _describe_call(contract)
-        result = to_jsonable(resolve_contract(contract, session))
+        cls = _descriptor.classes.get(contract.cls_name)
+
+        if cls is not None and contract.kind in {
+            "method",
+            "property",
+            "subscribe",
+        }:
+            member = cls.members.get(contract.member)
+
+        result = resolve_contract(contract, session)
+
+        if cls is not None and member is not None:
+            result = to_json(member.ret, cls.cls, result)
     except Exception as error:
         await ws.send_json(
             asdict(ContractResolution(call=call, error=str(error)))
@@ -157,13 +185,12 @@ async def _resolve(
     if contract.kind == "method" and contract.instance_id is not None:
         instance = session.get(contract.cls_name, contract.instance_id)
         changes: Sequence[str] | None = None
-        cls = _descriptor.classes.get(contract.cls_name)
 
-        if cls is not None:
-            member = cls.members.get(contract.member)
+        if member is not None and member.changes:
+            changes = member.changes
 
-            if member is not None and member.changes:
-                changes = member.changes
-
-        for update in session.take_updates(instance, changes):
-            await ws.send_json(_update_message(*update))
+        for instance_id, member_name, raw in session.take_updates(
+            instance, changes
+        ):
+            value = _encode(cls, member_name, raw)
+            await ws.send_json(_update_message(instance_id, member_name, value))

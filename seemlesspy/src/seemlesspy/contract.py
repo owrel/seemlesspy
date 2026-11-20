@@ -2,8 +2,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from .descriptor import AcceptedType
-
 _KINDS = (
     "method",
     "constructor",
@@ -27,7 +25,7 @@ class Contract:
     cls_name: str
     instance_id: str | None
     member: str
-    params: Sequence[tuple[str, AcceptedType]]
+    params: Sequence[tuple[str, Any]]
 
     def __post_init__(self) -> None:
         if self.kind not in _KINDS:

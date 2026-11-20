@@ -1,17 +1,16 @@
 import json
+import types
+import typing
 from collections.abc import Sequence
 
-from .descriptor import AcceptedType, Class, split_type
+from .descriptor import Class
 
-_TS_TYPES = {
-    "str": "string",
-    "int": "number",
-    "float": "number",
-    "bool": "boolean",
-    "None": "null",
-    "any": "any",
-    "list": "unknown[]",
-    "dict": "Record<string, unknown>",
+_TS_SCALARS = {
+    str: "string",
+    int: "number",
+    float: "number",
+    bool: "boolean",
+    type(None): "null",
 }
 
 _TS_IMPORT = 'import { connector } from "seemlessts";'
@@ -260,37 +259,74 @@ def _contract_lines(
     ]
 
 
-def _ts_type(type_name: AcceptedType) -> str:
-    if type_name is None:
+def _ts_type(annotation: object) -> str:
+    if annotation is None or annotation is type(None):
         return "null"
-    if not isinstance(type_name, str):
-        raise NotImplementedError(f"TODO: TS type for {type_name!r}")
-    return _ts_descriptor(type_name)
+
+    if annotation is typing.Any:
+        return "any"
+
+    if annotation is list or annotation is tuple or annotation is set:
+        return "unknown[]"
+
+    if annotation is dict:
+        return "Record<string, unknown>"
+
+    origin = typing.get_origin(annotation)
+
+    if origin is types.UnionType or origin is typing.Union:
+        arguments = typing.get_args(annotation)
+        mapped = list(dict.fromkeys([_ts_type(arg) for arg in arguments]))
+        return " | ".join(mapped)
+
+    if origin is typing.Literal:
+        return " | ".join(
+            [json.dumps(value) for value in typing.get_args(annotation)]
+        )
+
+    if origin is list or origin is Sequence:
+        arguments = typing.get_args(annotation)
+
+        if arguments:
+            return f"{_ts_type(arguments[0])}[]"
+
+        return "unknown[]"
+
+    if origin is tuple:
+        arguments = typing.get_args(annotation)
+
+        if not arguments:
+            return "unknown[]"
+
+        if len(arguments) == 2 and arguments[1] is Ellipsis:
+            return f"{_ts_type(arguments[0])}[]"
+
+        parts = [_ts_type(arg) for arg in arguments]
+        return "[" + ", ".join(parts) + "]"
+
+    if origin is set:
+        arguments = typing.get_args(annotation)
+
+        if arguments:
+            return f"{_ts_type(arguments[0])}[]"
+
+        return "unknown[]"
+
+    if origin is dict:
+        arguments = typing.get_args(annotation)
+
+        if len(arguments) == 2:
+            return f"Record<{_ts_type(arguments[0])}, {_ts_type(arguments[1])}>"
+
+        return "Record<string, unknown>"
+
+    if isinstance(annotation, type):
+        return _TS_SCALARS.get(annotation, annotation.__name__)
+
+    raise NotImplementedError(f"TODO: TS type for {annotation!r}")
 
 
-def _ts_descriptor(descriptor: str) -> str:
-    parts = split_type(descriptor, "|")
-
-    if len(parts) > 1:
-        return " | ".join([_ts_descriptor(part) for part in parts])
-
-    if descriptor.startswith("list[") and descriptor.endswith("]"):
-        inner = descriptor[len("list[") : -1]
-        return f"{_ts_descriptor(inner)}[]"
-
-    if descriptor.startswith("dict[") and descriptor.endswith("]"):
-        inner = descriptor[len("dict[") : -1]
-        pair = split_type(inner, ",")
-
-        if len(pair) == 2:
-            key = _ts_descriptor(pair[0])
-            value = _ts_descriptor(pair[1])
-            return f"Record<{key}, {value}>"
-
-    return _TS_TYPES.get(descriptor, descriptor)
-
-
-def _ts_return_type(type_name: AcceptedType) -> str:
-    if type_name is None:
+def _ts_return_type(annotation: object) -> str:
+    if annotation is None:
         return "void"
-    return _ts_type(type_name)
+    return _ts_type(annotation)

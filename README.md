@@ -72,7 +72,7 @@ await counter.release();
 
 The connector opens the socket on first use. Default URL: `ws://127.0.0.1:8000/ws`; change it with `configureConnector({ url })` from `seemlessts`. Without a bundler, map `seemlessts` to `dist/connector.js` in an import map.
 
-Supported annotations: `str`, `int`, `float`, `bool`, `None`, bare classes, `Any`, `list[X]`, `dict[K, V]` and unions such as `X | None` (nested combinations included).
+Supported annotations: `str`, `int`, `float`, `bool`, `None`, bare classes, `Any`, `Self`, `Literal[...]`, `list[X]`, `Sequence[X]`, `set[X]`, `dict[K, V]`, `tuple[X]` / `tuple[X, ...]` and unions such as `X | None` (nested combinations included). Values are validated and converted with Pydantic's `TypeAdapter` (strict JSON mode).
 
 Custom values can be converted both ways with `register_transformer(Foo, to_dict, from_dict)`; either converter is optional and falls back to `obj.to_json()` / `Foo.from_json(data)`. Lists, tuples and dict values are walked in both directions.
 
