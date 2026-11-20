@@ -74,7 +74,7 @@ The connector opens the socket on first use. Default URL: `ws://127.0.0.1:8000/w
 
 Supported annotations: `str`, `int`, `float`, `bool`, `None`, bare classes, `Any`, `list[X]`, `dict[K, V]` and unions such as `X | None` (nested combinations included).
 
-Custom return values can be converted before sending with `register_transformer(Foo, to_dict)`; without a function it falls back to `obj.to_json()`. Lists, tuples and dict values are walked. Only outbound values are transformed.
+Custom values can be converted both ways with `register_transformer(Foo, to_dict, from_dict)`; either converter is optional and falls back to `obj.to_json()` / `Foo.from_json(data)`. Lists, tuples and dict values are walked in both directions.
 
 ## CLI
 

@@ -14,13 +14,22 @@ _descriptor = Descriptor(version="0.1", classes={})
 
 _Transform = Callable[[Any], Any]
 
-_transformers: dict[type, _Transform | None] = {}
+
+@dataclass
+class Transformer:
+    to_json: _Transform | None = None
+    from_json: _Transform | None = None
+
+
+_transformers: dict[type, Transformer] = {}
 
 
 def register_transformer(
-    cls: type, transformer: _Transform | None = None
+    cls: type,
+    to_json: _Transform | None = None,
+    from_json: _Transform | None = None,
 ) -> None:
-    _transformers[cls] = transformer
+    _transformers[cls] = Transformer(to_json, from_json)
 
 
 def to_jsonable(value: Any) -> Any:
@@ -40,8 +49,8 @@ def to_jsonable(value: Any) -> Any:
 
     transformer = _transformer_for(type(value))
 
-    if transformer is not None:
-        return transformer(value)
+    if transformer is not None and transformer.to_json is not None:
+        return transformer.to_json(value)
 
     method = getattr(value, "to_json", None)
 
@@ -51,10 +60,91 @@ def to_jsonable(value: Any) -> Any:
     return value
 
 
-def _transformer_for(cls: type) -> _Transform | None:
+def from_jsonable(type_name: AcceptedType, value: Any) -> Any:
+    if not isinstance(type_name, str):
+        return value
+
+    parts = split_type(type_name, "|")
+
+    if len(parts) > 1:
+        if value is None:
+            return None
+
+        for part in parts:
+            if part == "None":
+                continue
+            if _is_scalar_descriptor(part) and _matches_type(part, value):
+                return from_jsonable(part, value)
+
+        for part in parts:
+            if part == "None":
+                continue
+            return from_jsonable(part, value)
+
+        return value
+
+    if type_name.startswith("list[") and type_name.endswith("]"):
+        if not isinstance(value, list):
+            return value
+
+        inner = type_name[len("list[") : -1]
+        return [from_jsonable(inner, item) for item in value]
+
+    if type_name.startswith("dict[") and type_name.endswith("]"):
+        if not isinstance(value, dict):
+            return value
+
+        pair = split_type(type_name[len("dict[") : -1], ",")
+
+        if len(pair) != 2:
+            return value
+
+        result: dict[Any, Any] = {}
+
+        for key, item in value.items():
+            result[from_jsonable(pair[0], key)] = from_jsonable(pair[1], item)
+
+        return result
+
+    cls = _named_class(type_name)
+
+    if cls is not None:
+        transformer = _transformers.get(cls)
+
+        if transformer is not None and transformer.from_json is not None:
+            return transformer.from_json(value)
+
+        method = getattr(cls, "from_json", None)
+
+        if callable(method):
+            return method(value)
+
+    return value
+
+
+def _transformer_for(cls: type) -> Transformer | None:
     for base in cls.__mro__:
         if base in _transformers:
             return _transformers[base]
+
+    return None
+
+
+def _is_scalar_descriptor(descriptor: str) -> bool:
+    if descriptor in {"str", "int", "float", "bool", "any", "list", "dict"}:
+        return True
+    return descriptor.startswith(("list[", "dict["))
+
+
+def _named_class(name: str) -> type | None:
+    for cls in _transformers:
+        if cls.__name__ == name:
+            return cls
+
+    registered = _descriptor.classes.get(name)
+
+    if registered is not None:
+        return registered.cls
 
     return None
 
@@ -161,7 +251,8 @@ def resolve_contract(contract: Contract, session: Session) -> Any:
 
     if contract.kind == "constructor":
         _check_params(cls.constructor.params, contract.params)
-        return session.add(cls.cls(**dict(contract.params)))
+        kwargs = _decode_params(cls.constructor.params, contract.params)
+        return session.add(cls.cls(**kwargs))
 
     if contract.instance_id is None:
         raise ValueError(f"{contract.kind} contract requires an instance id")
@@ -202,7 +293,8 @@ def resolve_contract(contract: Contract, session: Session) -> Any:
     if member.ref is None:
         raise ValueError(f"{contract.member!r} is not callable")
 
-    return member.ref(instance, **dict(contract.params))
+    kwargs = _decode_params(member.params, contract.params)
+    return member.ref(instance, **kwargs)
 
 
 def _class_name(cls: type["SeemlessPy"]) -> str:
@@ -242,6 +334,19 @@ def _check_params(
             raise ValueError(f"missing parameter {name!r}")
         if not _matches_type(type_name, values[name]):
             raise ValueError(f"parameter {name!r} must be {type_name}")
+
+
+def _decode_params(
+    expected: Sequence[tuple[str, AcceptedType]],
+    provided: Sequence[tuple[str, AcceptedType]],
+) -> dict[str, Any]:
+    descriptors: dict[str, AcceptedType] = dict(expected)
+    values: dict[str, Any] = {
+        name: from_jsonable(descriptors.get(name), value)
+        for name, value in provided
+    }
+
+    return values
 
 
 def _matches_type(type_name: AcceptedType, value: object) -> bool:
